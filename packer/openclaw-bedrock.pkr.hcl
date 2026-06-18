@@ -133,8 +133,11 @@ build {
       "DEBIAN_FRONTEND=noninteractive",
     ]
     inline = [
-      "sudo apt-get install -y nginx python3-pip fail2ban unattended-upgrades",
-      "sudo pip3 install --break-system-packages 'certbot>=5.3'",
+      "sudo apt-get install -y nginx python3-pip python3-venv fail2ban unattended-upgrades",
+      "sudo python3 -m venv /opt/certbot/venv",
+      "sudo /opt/certbot/venv/bin/pip install --upgrade pip",
+      "sudo /opt/certbot/venv/bin/pip install 'certbot>=5.3'",
+      "sudo ln -sf /opt/certbot/venv/bin/certbot /usr/local/bin/certbot",
       "certbot --version",
       "sudo mkdir -p /etc/letsencrypt /var/www/certbot /opt/certbot",
       "sudo systemctl enable fail2ban",
