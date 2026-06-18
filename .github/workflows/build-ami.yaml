@@ -43,9 +43,15 @@ jobs:
         env:
           PACKER_VERSION: ${{ env.PACKER_VERSION }}
         run: |
-          wget -q "https://releases.hashicorp.com/packer/${PACKER_VERSION}/packer_${PACKER_VERSION}_linux_amd64.zip"
-          unzip -q "packer_${PACKER_VERSION}_linux_amd64.zip"
-          sudo mv packer /usr/local/bin/
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y unzip
+          TMP_DIR=$(mktemp -d)
+          cd "$TMP_DIR"
+          curl -fsSL -o packer.zip \
+            "https://releases.hashicorp.com/packer/${PACKER_VERSION}/packer_${PACKER_VERSION}_linux_amd64.zip"
+          unzip -q packer.zip
+          sudo install -m 755 packer /usr/local/bin/packer
           packer --version
 
       - name: Init Packer Plugins
