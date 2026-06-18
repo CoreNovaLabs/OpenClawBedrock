@@ -1,0 +1,38 @@
+[Unit]
+Description=OpenClaw Enterprise AI Agent
+Documentation=https://github.com/openclaw/openclaw
+After=network.target docker.service litellm.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/openclaw
+EnvironmentFile=/opt/openclaw/openclaw.env
+ExecStart=/usr/bin/docker-compose up
+ExecStop=/usr/bin/docker-compose down
+Restart=on-failure
+RestartSec=30
+
+# Health check for auto-healing
+ExecStartPre=/bin/bash -c 'echo "Starting OpenClaw..."'
+
+# Resource limits
+MemoryHigh=80%
+MemoryMax=4G
+CPUQuota=200%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openclaw
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,96 @@
+# OpenClaw Enterprise - GitHub Actions Workflow
+# Builds AMI using Packer on every push to main or manual trigger
+
+name: Build OpenClaw AMI
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'packer/**'
+      - '.github/workflows/build-ami.yaml'
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: 'AWS Region to build AMI'
+        required: true
+        default: 'us-west-2'
+        type: string
+
+env:
+  AWS_REGION: ${{ inputs.aws_region || 'us-west-2' }}
+  PACKER_VERSION: 1.11.0
+
+jobs:
+  build-ami:
+    name: Build AMI with Packer
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Required for OIDC authentication
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          # Alternatively, use long-lived keys (less secure):
+          # aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          # aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          # aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install Packer
+        run: |
+          wget https://releases.hashicorp.com/packer/${{ env.PACKER_VERSION }}/packer_${{ env.PACKER_VERSION }}_linux_amd64.zip
+          unzip packer_${{ env.PACKER_VERSION }}_linux_amd64.zip
+          sudo mv packer /usr/local/bin/
+          packer --version
+
+      - name: Validate Packer Template
+        working-directory: ./packer
+        run: packer validate openclaw-bedrock.pkr.hcl
+
+      - name: Build AMI
+        working-directory: ./packer
+        run: |
+          packer build \
+            -var 'aws_region=${{ env.AWS_REGION }}' \
+            -var 'ami_name=openclaw-enterprise-${{ github.sha }}' \
+            openclaw-bedrock.pkr.hcl
+
+      - name: Output AMI ID
+        id: ami-output
+        run: |
+          # Extract AMI ID from Packer output (simplified)
+          # In production, parse the actual Packer output file
+          echo "ami_id=<AMI_ID_FROM_PACKER_OUTPUT>" >> $GITHUB_OUTPUT
+      
+      - name: Update CloudFormation Template (Optional)
+        if: success()
+        run: |
+          echo "Updating CloudFormation template with new AMI ID..."
+          # Script to replace AMI ID in cloudformation/main.yaml
+          # sed -i "s/ami-xxxxxxxx/$(echo ${{ steps.ami-output.outputs.ami_id }})/g" cloudformation/main.yaml
+          # git config user.name "GitHub Actions"
+          # git config user.email "actions@github.com"
+          # git add cloudformation/main.yaml
+          # git commit -m "Update AMI ID to ${{ steps.ami-output.outputs.ami_id }}"
+          # git push
+        continue-on-error: true
+
+      - name: Notify Success
+        if: success()
+        run: |
+          echo "✅ AMI Build Successful!"
+          echo "Region: ${{ env.AWS_REGION }}"
+          echo "AMI ID: ${{ steps.ami-output.outputs.ami_id }}"
+
+      - name: Notify Failure
+        if: failure()
+        run: |
+          echo "❌ AMI Build Failed!"
+          echo "Check the logs above for details."

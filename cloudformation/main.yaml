@@ -1,0 +1,460 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  OpenClaw Enterprise - AI Agent Platform on AWS Bedrock
+  One-click deployment with IP-based HTTPS, LiteLLM routing, and enterprise security.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "OpenClaw Configuration"
+        Parameters:
+          - OpenClawVersion
+          - OpenClawModel
+          - ScenarioPreset
+          - EnableSandbox
+          - GatewayToken
+      - Label:
+          default: "Cost Control & Routing"
+        Parameters:
+          - EnableLiteLLM
+          - MonthlyTokenBudget
+          - LiteLLMCacheSize
+      - Label:
+          default: "Security & Compliance"
+        Parameters:
+          - EnableGuardrails
+          - GuardrailId
+          - EnableIMDSv2
+      - Label:
+          default: "Network & Access"
+        Parameters:
+          - InstanceType
+          - VpcId
+          - SubnetId
+          - EnablePublicAccess
+          - AllowedCIDR
+      - Label:
+          default: "Operations & Monitoring"
+        Parameters:
+          - EnableMonitoring
+          - EnableBackup
+          - EnableAutoUpdate
+          - BackupRetentionDays
+          - NotificationEmail
+
+    ParameterLabels:
+      OpenClawVersion:
+        default: "OpenClaw Version"
+      OpenClawModel:
+        default: "Bedrock Model ID"
+      ScenarioPreset:
+        default: "Business Scenario"
+      EnableSandbox:
+        default: "Enable Docker Sandbox"
+      GatewayToken:
+        default: "Gateway Access Token"
+      EnableLiteLLM:
+        default: "Enable LiteLLM Smart Routing"
+      MonthlyTokenBudget:
+        default: "Monthly Token Budget (USD)"
+      LiteLLMCacheSize:
+        default: "LiteLLM Cache Size (MB)"
+      EnableGuardrails:
+        default: "Enable Bedrock Guardrails"
+      GuardrailId:
+        default: "Guardrail ID (optional)"
+      EnableIMDSv2:
+        default: "Force IMDSv2"
+      InstanceType:
+        default: "EC2 Instance Type"
+      VpcId:
+        default: "VPC ID"
+      SubnetId:
+        default: "Subnet ID"
+      EnablePublicAccess:
+        default: "Enable Public HTTPS Access"
+      AllowedCIDR:
+        default: "Allowed CIDR Block"
+      EnableMonitoring:
+        default: "Enable CloudWatch Monitoring"
+      EnableBackup:
+        default: "Enable S3 Auto Backup"
+      EnableAutoUpdate:
+        default: "Enable Auto Update"
+      BackupRetentionDays:
+        default: "Backup Retention Days"
+      NotificationEmail:
+        default: "Alert Notification Email"
+
+Parameters:
+  OpenClawVersion:
+    Type: String
+    Default: "2026.4.27"
+    Description: "OpenClaw version to install (lock version for stability)"
+  
+  OpenClawModel:
+    Type: String
+    Default: "global.amazon.nova-2-lite-v1:0"
+    Description: "Amazon Bedrock model ID (e.g., global.amazon.nova-2-lite-v1:0, anthropic.claude-sonnet-4-20250514-v1:0)"
+  
+  ScenarioPreset:
+    Type: String
+    Default: "general"
+    AllowedValues:
+      - general
+      - ecommerce
+      - devops
+      - knowledge
+      - support
+    Description: "Pre-configured business scenario"
+  
+  EnableSandbox:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: "Enable Docker sandbox isolation for non-main sessions"
+  
+  GatewayToken:
+    Type: String
+    MinLength: 16
+    Description: "Secure token for OpenClaw Gateway access (min 16 chars)"
+    NoEcho: true
+  
+  EnableLiteLLM:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: "Enable LiteLLM proxy for smart routing and caching"
+  
+  MonthlyTokenBudget:
+    Type: Number
+    Default: 50
+    MinValue: 10
+    MaxValue: 10000
+    Description: "Monthly token budget in USD for cost alerts"
+  
+  LiteLLMCacheSize:
+    Type: Number
+    Default: 512
+    MinValue: 128
+    MaxValue: 4096
+    Description: "LiteLLM semantic cache size in MB"
+  
+  EnableGuardrails:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: "Enable Amazon Bedrock Guardrails for content filtering"
+  
+  GuardrailId:
+    Type: String
+    Default: ""
+    Description: "Existing Bedrock Guardrail ID (leave empty to auto-create if enabled)"
+  
+  EnableIMDSv2:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: "Force IMDSv2 for instance metadata (security best practice)"
+  
+  InstanceType:
+    Type: String
+    Default: "c7g.large"
+    AllowedValues:
+      - c7g.large
+      - c7g.xlarge
+      - m7g.large
+      - m7g.xlarge
+    Description: "EC2 instance type (Graviton ARM recommended for cost savings)"
+  
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: "VPC ID for deployment (leave empty to create new VPC)"
+  
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: "Subnet ID for EC2 instance (must be in specified VPC)"
+  
+  EnablePublicAccess:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: "Enable public HTTPS access via Elastic IP"
+  
+  AllowedCIDR:
+    Type: String
+    Default: "0.0.0.0/0"
+    AllowedPattern: "(\\d{1,3}\\.){3}\\d{1,3}/\\d{1,2}"
+    Description: "CIDR block allowed to access the application (e.g., your office IP)"
+  
+  EnableMonitoring:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: "Enable CloudWatch monitoring, logs, and alarms"
+  
+  EnableBackup:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: "Enable daily S3 backup of OpenClaw workspace"
+  
+  EnableAutoUpdate:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: "Enable automatic OpenClaw version updates (blue-green deployment)"
+  
+  BackupRetentionDays:
+    Type: Number
+    Default: 30
+    MinValue: 7
+    MaxValue: 365
+    Description: "Number of days to retain backups in S3"
+  
+  NotificationEmail:
+    Type: String
+    Default: ""
+    Description: "Email address for cost and health alerts (leave empty to disable)"
+
+Conditions:
+  CreateVPC: !Equals [!Ref VpcId, ""]
+  UseExistingVPC: !Not [!Condition CreateVPC]
+  EnableLiteLLMCondition: !Equals [!Ref EnableLiteLLM, "true"]
+  EnableGuardrailsCondition: !Equals [!Ref EnableGuardrails, "true"]
+  EnableMonitoringCondition: !Equals [!Ref EnableMonitoring, "true"]
+  EnableBackupCondition: !Equals [!Ref EnableBackup, "true"]
+  EnableAutoUpdateCondition: !Equals [!Ref EnableAutoUpdate, "true"]
+  EnablePublicAccessCondition: !Equals [!Ref EnablePublicAccess, "true"]
+  HasNotificationEmail: !Not [!Equals [!Ref NotificationEmail, ""]]
+
+Resources:
+  # Nested Stacks
+  VPCStack:
+    Condition: CreateVPC
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://s3.amazonaws.com/REPLACE-WITH-YOUR-BUCKET/cloudformation/nested/vpc.yaml
+      Parameters:
+        EnvironmentName: openclaw-enterprise
+  
+  IAMStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://s3.amazonaws.com/REPLACE-WITH-YOUR-BUCKET/cloudformation/nested/iam.yaml
+      Parameters:
+        EnableGuardrails: !Ref EnableGuardrails
+        EnableLiteLLM: !Ref EnableLiteLLM
+  
+  MonitoringStack:
+    Condition: EnableMonitoringCondition
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://s3.amazonaws.com/REPLACE-WITH-YOUR-BUCKET/cloudformation/nested/monitoring.yaml
+      Parameters:
+        MonthlyTokenBudget: !Ref MonthlyTokenBudget
+        NotificationEmail: !Ref NotificationEmail
+        InstanceType: !Ref InstanceType
+  
+  BackupStack:
+    Condition: EnableBackupCondition
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://s3.amazonaws.com/REPLACE-WITH-YOUR-BUCKET/cloudformation/nested/backup.yaml
+      Parameters:
+        BackupRetentionDays: !Ref BackupRetentionDays
+        EnableAutoUpdate: !Ref EnableAutoUpdate
+  
+  # Security Group
+  OpenClawSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security group for OpenClaw Enterprise"
+      VpcId: !If [CreateVPC, !GetAtt VPCStack.Outputs.VpcId, !Ref VpcId]
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref AllowedCIDR
+          Description: "HTTPS access"
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: "HTTP for Let's Encrypt certificate validation"
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+          Description: "Allow all outbound traffic"
+      Tags:
+        - Key: Name
+          Value: openclaw-enterprise-sg
+        - Key: Project
+          Value: OpenClawEnterprise
+
+  # Elastic IP (for stable IP-based HTTPS certificate)
+  ElasticIP:
+    Condition: EnablePublicAccessCondition
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: openclaw-enterprise-eip
+
+  # EC2 Instance
+  OpenClawInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !GetAtt IAMStack.Outputs.InstanceProfile
+      SubnetId: !If [CreateVPC, !GetAtt VPCStack.Outputs.PublicSubnetId, !Ref SubnetId]
+      SecurityGroupIds:
+        - !Ref OpenClawSecurityGroup
+      EbsOptimized: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: true
+        - DeviceName: /dev/xvdf
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: false
+      MetadataOptions:
+        HttpTokens: !If [EnableIMDSv2, "required", "optional"]
+        HttpEndpoint: enabled
+        HttpPutResponseHopLimit: 1
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          
+          # Export parameters for UserData script
+          export OPENCLAW_VERSION="${OpenClawVersion}"
+          export OPENCLAW_MODEL="${OpenClawModel}"
+          export SCENARIO_PRESET="${ScenarioPreset}"
+          export ENABLE_SANDBOX="${EnableSandbox}"
+          export GATEWAY_TOKEN="${GatewayToken}"
+          export ENABLE_LITELLM="${EnableLiteLLM}"
+          export LITELLM_CACHE_SIZE="${LiteLLMCacheSize}"
+          export ENABLE_GUARDRAILS="${EnableGuardrails}"
+          export GUARDRAIL_ID="${GuardrailId}"
+          export ENABLE_MONITORING="${EnableMonitoring}"
+          export ENABLE_BACKUP="${EnableBackup}"
+          export ENABLE_AUTO_UPDATE="${EnableAutoUpdate}"
+          export NOTIFICATION_EMAIL="${NotificationEmail}"
+          export MONTHLY_BUDGET="${MonthlyTokenBudget}"
+          export REGION="${AWS::Region}"
+          export STACK_NAME="${AWS::StackName}"
+          
+          # Execute bootstrap script from S3
+          aws s3 cp s3://REPLACE-WITH-YOUR-BUCKET/packer/files/userdata/bootstrap.sh /tmp/bootstrap.sh
+          chmod +x /tmp/bootstrap.sh
+          /tmp/bootstrap.sh
+      Tags:
+        - Key: Name
+          Value: openclaw-enterprise
+        - Key: Project
+          Value: OpenClawEnterprise
+        - Key: Version
+          Value: !Ref OpenClawVersion
+        - Key: Scenario
+          Value: !Ref ScenarioPreset
+
+  # SSM Parameter for Gateway Token (encrypted)
+  GatewayTokenParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /openclaw/${AWS::StackName}/gateway-token
+      Type: SecureString
+      Value: !Ref GatewayToken
+      Description: "OpenClaw Gateway access token"
+      Tags:
+        Project: OpenClawEnterprise
+
+Outputs:
+  InstanceId:
+    Description: "EC2 Instance ID"
+    Value: !Ref OpenClawInstance
+    Export:
+      Name: !Sub "${AWS::StackName}-InstanceId"
+  
+  InstancePublicIP:
+    Condition: EnablePublicAccessCondition
+    Description: "Public IP address (Elastic IP) for HTTPS access"
+    Value: !GetAtt ElasticIP.PublicIp
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicIP"
+  
+  InstancePrivateIP:
+    Description: "Private IP address"
+    Value: !GetAtt OpenClawInstance.PrivateIp
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateIP"
+  
+  HTTPSURL:
+    Condition: EnablePublicAccessCondition
+    Description: "HTTPS URL to access OpenClaw Gateway"
+    Value: !Sub "https://${ElasticIP.PublicIp}"
+    Export:
+      Name: !Sub "${AWS::StackName}-HTTPSURL"
+  
+  SSMSessionCommand:
+    Description: "AWS CLI command to start SSM Session Manager"
+    Value: !Sub "aws ssm start-session --target ${OpenClawInstance} --region ${AWS::Region}"
+    Export:
+      Name: !Sub "${AWS::StackName}-SSMCommand"
+  
+  GatewayTokenParamName:
+    Description: "SSM Parameter name for Gateway Token"
+    Value: !Ref GatewayTokenParameter
+    Export:
+      Name: !Sub "${AWS::StackName}-GatewayTokenParam"
+  
+  VpcId:
+    Condition: CreateVPC
+    Description: "VPC ID created by this stack"
+    Value: !GetAtt VPCStack.Outputs.VpcId
+    Export:
+      Name: !Sub "${AWS::StackName}-VpcId"
+  
+  SubnetId:
+    Condition: CreateVPC
+    Description: "Public Subnet ID created by this stack"
+    Value: !GetAtt VPCStack.Outputs.PublicSubnetId
+    Export:
+      Name: !Sub "${AWS::StackName}-SubnetId"
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      AMI: "ami-placeholder-us-east-1"
+    us-west-2:
+      AMI: "ami-placeholder-us-west-2"
+    eu-west-1:
+      AMI: "ami-placeholder-eu-west-1"
+    ap-northeast-1:
+      AMI: "ami-placeholder-ap-northeast-1"
+    # Add more regions as AMIs are built

@@ -1,0 +1,35 @@
+[Unit]
+Description=LiteLLM Proxy for OpenClaw Enterprise
+Documentation=https://docs.litellm.ai
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/litellm
+EnvironmentFile=/opt/litellm/litellm.env
+ExecStart=/usr/bin/docker-compose up
+ExecStop=/usr/bin/docker-compose down
+Restart=on-failure
+RestartSec=10
+
+# Resource limits
+MemoryHigh=2G
+MemoryMax=3G
+CPUQuota=100%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=litellm
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

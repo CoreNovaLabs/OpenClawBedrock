@@ -1,0 +1,240 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CloudWatch Monitoring Stack for OpenClaw Enterprise
+  Creates alarms, dashboards, and log groups for cost and health monitoring.
+
+Parameters:
+  MonthlyTokenBudget:
+    Type: Number
+    Default: 50
+    Description: "Monthly token budget in USD"
+  
+  NotificationEmail:
+    Type: String
+    Default: ""
+    Description: "Email for alerts"
+  
+  InstanceType:
+    Type: String
+    Default: "c7g.large"
+    Description: "EC2 instance type"
+
+Conditions:
+  HasNotificationEmail: !Not [!Equals [!Ref NotificationEmail, ""]]
+
+Resources:
+  # SNS Topic for Alerts
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: openclaw-enterprise-alerts
+      Tags:
+        - Key: Project
+          Value: OpenClawEnterprise
+
+  # Email Subscription (if email provided)
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasNotificationEmail
+    Properties:
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+      TopicArn: !Ref AlertTopic
+
+  # CloudWatch Log Group
+  OpenClawLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /openclaw/enterprise
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: OpenClawEnterprise
+
+  # Alarms
+  
+  # CPU Utilization Alarm
+  CPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: openclaw-enterprise-high-cpu
+      AlarmDescription: "CPU utilization exceeds 80% for 5 minutes"
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: InstanceType
+          Value: !Ref InstanceType
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+
+  # Memory Availability Alarm (requires CloudWatch Agent)
+  MemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: openclaw-enterprise-low-memory
+      AlarmDescription: "Available memory is below 20%"
+      MetricName: mem_available_percent
+      Namespace: CWAgent
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 20
+      ComparisonOperator: LessThanThreshold
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+
+  # Status Check Alarm
+  StatusCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: openclaw-enterprise-status-check-failed
+      AlarmDescription: "EC2 instance status check failed"
+      MetricName: StatusCheckFailed
+      Namespace: AWS/EC2
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+
+  # Bedrock InvokeModel Errors Alarm
+  BedrockErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: openclaw-enterprise-bedrock-errors
+      AlarmDescription: "Bedrock API call errors exceed threshold"
+      MetricName: InvocationErrors
+      Namespace: AWS/Bedrock
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+
+  # Dashboard
+  OpenClawDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: openclaw-enterprise
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "EC2 CPU Utilization",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/EC2", "CPUUtilization", "InstanceId", "${OpenClawInstance}"]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "view": "timeSeries"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "EC2 Memory Available",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["CWAgent", "mem_available_percent", "InstanceId", "${OpenClawInstance}"]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "view": "timeSeries"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Bedrock Invocations",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/Bedrock", "Invocations", "Operation", "InvokeModel"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "view": "timeSeries"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Bedrock Latency",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/Bedrock", "InvocationLatency", "Operation", "InvokeModel"]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "view": "timeSeries"
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 12,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "title": "OpenClaw Application Logs",
+                "region": "${AWS::Region}",
+                "query": "SOURCE '/openclaw/enterprise'\n| fields @timestamp, @message\n| sort @timestamp desc\n| limit 100",
+                "view": "table"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  AlertTopicArn:
+    Description: "SNS Topic ARN for alerts"
+    Value: !Ref AlertTopic
+    Export:
+      Name: openclaw-enterprise-AlertTopicArn
+  
+  LogGroupName:
+    Description: "CloudWatch Log Group name"
+    Value: !Ref OpenClawLogGroup
+    Export:
+      Name: openclaw-enterprise-LogGroupName
+  
+  DashboardName:
+    Description: "CloudWatch Dashboard name"
+    Value: !Ref OpenClawDashboard
+    Export:
+      Name: openclaw-enterprise-DashboardName
