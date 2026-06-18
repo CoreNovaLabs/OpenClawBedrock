@@ -1,0 +1,41 @@
+# LiteLLM 默认配置文件（AMI 内置模板）
+# 启动时会被 generate-config.sh 替换为动态配置
+
+model_list:
+  - model_name: default
+    litellm_params:
+      model: bedrock/global.amazon.nova-2-lite-v1:0
+      region_name: us-west-2
+      max_retries: 3
+      timeout: 60
+
+router_settings:
+  routing_strategy: simple-shuffle
+  fallbacks:
+    - models: ["bedrock/global.amazon.nova-2-lite-v1:0"]
+      fallback_models:
+        - bedrock/global.amazon.nova-lite-v1:0
+        - bedrock/anthropic.claude-3-haiku-20240307-v1:0
+  allowed_fails: 3
+  cooldown_time: 60
+
+cache:
+  type: redis
+  host: localhost
+  port: 6379
+  ttl: 3600
+  semantic_cache: true
+  similarity_threshold: 0.9
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  telemetry: false
+
+general_settings:
+  master_key: sk-litellm-openclaw-enterprise
+  database_url: null
+
+environment_variables:
+  AWS_REGION: us-west-2
+  LITELLM_LOG_LEVEL: INFO

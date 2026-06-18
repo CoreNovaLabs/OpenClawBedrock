@@ -1,0 +1,97 @@
+# OpenClaw Enterprise - GitHub Actions Workflow
+# Builds AMI using Packer on every push to main or manual trigger
+
+name: Build OpenClaw AMI
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "packer/**"
+      - ".github/workflows/build-ami.yaml"
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: "AWS Region to build AMI"
+        required: true
+        default: "us-west-2"
+        type: string
+
+env:
+  AWS_REGION: ${{ github.event.inputs.aws_region || 'us-west-2' }}
+  PACKER_VERSION: 1.11.0
+
+jobs:
+  build-ami:
+    name: Build AMI with Packer
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install Packer
+        env:
+          PACKER_VERSION: ${{ env.PACKER_VERSION }}
+        run: |
+          wget -q "https://releases.hashicorp.com/packer/${PACKER_VERSION}/packer_${PACKER_VERSION}_linux_amd64.zip"
+          unzip -q "packer_${PACKER_VERSION}_linux_amd64.zip"
+          sudo mv packer /usr/local/bin/
+          packer --version
+
+      - name: Init Packer Plugins
+        working-directory: ./packer
+        run: packer init openclaw-bedrock.pkr.hcl
+
+      - name: Validate Packer Template
+        working-directory: ./packer
+        run: packer validate openclaw-bedrock.pkr.hcl
+
+      - name: Build AMI
+        working-directory: ./packer
+        run: |
+          packer build \
+            -var "region=${AWS_REGION}" \
+            -var "ami_name=openclaw-enterprise-${GITHUB_SHA}" \
+            openclaw-bedrock.pkr.hcl
+
+      - name: Output AMI ID
+        id: ami-output
+        working-directory: ./packer
+        run: |
+          AMI_ID=$(jq -r '.builds[-1].artifact_id' packer-manifest.json | cut -d: -f2)
+          if [ -z "$AMI_ID" ] || [ "$AMI_ID" = "null" ]; then
+            echo "Failed to parse AMI ID from packer-manifest.json" >&2
+            cat packer-manifest.json >&2
+            exit 1
+          fi
+          echo "ami_id=$AMI_ID" >> "$GITHUB_OUTPUT"
+          echo "Built AMI: $AMI_ID in ${AWS_REGION}"
+
+      - name: Write Job Summary
+        if: success()
+        run: |
+          {
+            echo "## OpenClaw AMI Build"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Region | ${AWS_REGION} |"
+            echo "| AMI ID | \`${{ steps.ami-output.outputs.ami_id }}\` |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            echo ""
+            echo "Update \`cloudformation/main.yaml\` RegionMap for \`${AWS_REGION}\` with this AMI ID before deploying."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify Failure
+        if: failure()
+        run: echo "AMI build failed. Check the logs above for details."

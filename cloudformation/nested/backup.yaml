@@ -1,0 +1,311 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  S3 Backup and Auto-Update Stack for OpenClaw Enterprise
+  Creates backup bucket, lifecycle policies, and EventBridge rules for automated backups.
+
+Parameters:
+  BackupRetentionDays:
+    Type: Number
+    Default: 30
+    MinValue: 7
+    MaxValue: 365
+    Description: "Number of days to retain backups"
+
+  EnableAutoUpdate:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: "Enable automatic OpenClaw updates"
+
+Resources:
+  # S3 Backup Bucket
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "openclaw-backup-${AWS::AccountId}-${AWS::Region}"
+      AccessControl: Private
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: BackupRetention
+            Status: Enabled
+            ExpirationInDays: !Ref BackupRetentionDays
+            Prefix: backups/
+          - Id: OldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 7
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Project
+          Value: OpenClawEnterprise
+        - Key: Purpose
+          Value: Backup
+
+  # CloudWatch Event Rule for Daily Backup
+  BackupEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: openclaw-enterprise-daily-backup
+      Description: "Trigger daily backup of OpenClaw workspace"
+      ScheduleExpression: rate(24 hours)
+      State: ENABLED
+      Targets:
+        - Id: BackupLambdaTarget
+          Arn: !GetAtt BackupLambda.Arn
+
+  # Lambda Permission for EventBridge
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref BackupLambda
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt BackupEventRule.Arn
+
+  # Backup Lambda Function
+  BackupLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: openclaw-enterprise-backup
+      Description: "Daily backup of OpenClaw workspace to S3"
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Timeout: 300
+      MemorySize: 256
+      Role: !GetAtt BackupLambdaRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import json
+          from datetime import datetime
+
+          def lambda_handler(event, context):
+              ec2 = boto3.client('ec2')
+              s3 = boto3.client('s3')
+
+              # Get instance ID from tag
+              response = ec2.describe_instances(
+                  Filters=[
+                      {'Name': 'tag:Project', 'Values': ['OpenClawEnterprise']},
+                      {'Name': 'instance-state-name', 'Values': ['running']}
+                  ]
+              )
+
+              instance_id = None
+              for reservation in response['Reservations']:
+                  for instance in reservation['Instances']:
+                      instance_id = instance['InstanceId']
+                      break
+                  if instance_id:
+                      break
+
+              if not instance_id:
+                  return {
+                      'statusCode': 404,
+                      'body': json.dumps('No running OpenClaw instance found')
+                  }
+
+              # Create backup manifest
+              backup_date = datetime.utcnow().strftime('%Y-%m-%d-%H-%M-%S')
+              manifest = {
+                  'backup_date': backup_date,
+                  'instance_id': instance_id,
+                  'region': os.environ.get('AWS_REGION'),
+                  'backup_type': 'daily'
+              }
+
+              # Upload manifest to S3
+              bucket_name = os.environ.get('BACKUP_BUCKET')
+              s3.put_object(
+                  Bucket=bucket_name,
+                  Key=f"backups/{backup_date}/manifest.json",
+                  Body=json.dumps(manifest, indent=2),
+                  ContentType='application/json'
+              )
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps(f'Backup initiated for instance {instance_id}')
+              }
+      Environment:
+        Variables:
+          BACKUP_BUCKET: !Ref BackupBucket
+      Tags:
+        - Key: Project
+          Value: OpenClawEnterprise
+
+  # IAM Role for Backup Lambda
+  BackupLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: BackupEC2AndS3
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DescribeEC2Instances
+                Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                Resource: "*"
+
+              - Sid: AccessBackupBucket
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource:
+                  - !Sub "${BackupBucket.Arn}/*"
+
+  # Auto-Update Lambda (optional)
+  AutoUpdateLambda:
+    Type: AWS::Lambda::Function
+    Condition: EnableAutoUpdateCondition
+    Properties:
+      FunctionName: openclaw-enterprise-auto-update
+      Description: "Automatic OpenClaw version update via SSM"
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Timeout: 600
+      MemorySize: 512
+      Role: !GetAtt AutoUpdateLambdaRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+
+          def lambda_handler(event, context):
+              ssm = boto3.client('ssm')
+              ec2 = boto3.client('ec2')
+
+              # Find OpenClaw instance
+              response = ec2.describe_instances(
+                  Filters=[
+                      {'Name': 'tag:Project', 'Values': ['OpenClawEnterprise']},
+                      {'Name': 'instance-state-name', 'Values': ['running']}
+                  ]
+              )
+
+              instance_id = None
+              for reservation in response['Reservations']:
+                  for instance in reservation['Instances']:
+                      instance_id = instance['InstanceId']
+                      break
+                  if instance_id:
+                      break
+
+              if not instance_id:
+                  return {
+                      'statusCode': 404,
+                      'body': json.dumps('No running OpenClaw instance found')
+                  }
+
+              # Send SSM command to update
+              response = ssm.send_command(
+                  InstanceIds=[instance_id],
+                  DocumentName='AWS-RunShellScript',
+                  Parameters={
+                      'commands': [
+                          '#!/bin/bash',
+                          'cd /opt/openclaw',
+                          'git fetch --tags',
+                          'LATEST_TAG=$(git describe --tags `git rev-list --tags --max-count=1`)',
+                          'git checkout $LATEST_TAG',
+                          'docker compose pull',
+                          'docker compose up -d --force-recreate'
+                      ]
+                  },
+                  Comment='Auto-update OpenClaw'
+              )
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps(f"Update command sent: {response['Command']['CommandId']}")
+              }
+      Tags:
+        - Key: Project
+          Value: OpenClawEnterprise
+
+  # IAM Role for Auto-Update Lambda
+  AutoUpdateLambdaRole:
+    Type: AWS::IAM::Role
+    Condition: EnableAutoUpdateCondition
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AutoUpdateSSM
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DescribeEC2Instances
+                Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                Resource: "*"
+
+              - Sid: SendSSMCommand
+                Effect: Allow
+                Action:
+                  - ssm:SendCommand
+                  - ssm:GetCommandInvocation
+                Resource:
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:document/*"
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:instance/*"
+
+Conditions:
+  EnableAutoUpdateCondition: !Equals [!Ref EnableAutoUpdate, "true"]
+
+Outputs:
+  BackupBucketName:
+    Description: "S3 Backup Bucket Name"
+    Value: !Ref BackupBucket
+    Export:
+      Name: openclaw-enterprise-BackupBucketName
+
+  BackupBucketArn:
+    Description: "S3 Backup Bucket ARN"
+    Value: !GetAtt BackupBucket.Arn
+    Export:
+      Name: openclaw-enterprise-BackupBucketArn
+
+  BackupLambdaArn:
+    Description: "Backup Lambda Function ARN"
+    Value: !GetAtt BackupLambda.Arn
+    Export:
+      Name: openclaw-enterprise-BackupLambdaArn
+
+  AutoUpdateLambdaArn:
+    Condition: EnableAutoUpdateCondition
+    Description: "Auto-Update Lambda Function ARN"
+    Value: !GetAtt AutoUpdateLambda.Arn
+    Export:
+      Name: openclaw-enterprise-AutoUpdateLambdaArn

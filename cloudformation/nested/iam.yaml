@@ -1,0 +1,235 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  IAM Roles and Policies for OpenClaw Enterprise
+  Implements least privilege access for Bedrock, S3, CloudWatch, and SSM.
+
+Parameters:
+  EnableGuardrails:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+
+  EnableLiteLLM:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+
+  AssetsS3Bucket:
+    Type: String
+    Description: "S3 bucket containing bootstrap and deployment assets"
+
+Resources:
+  # IAM Role for EC2 Instance
+  OpenClawInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: OpenClawBedrockAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: InvokeBedrockModels
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/*"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::*:inference-profile/*"
+
+              - Sid: ListBedrockModels
+                Effect: Allow
+                Action:
+                  - bedrock:ListFoundationModels
+                  - bedrock:ListInferenceProfiles
+                  - bedrock:GetInferenceProfile
+                Resource: "*"
+
+              - Sid: ApplyGuardrails
+                Effect: Allow
+                Action:
+                  - bedrock:ApplyGuardrail
+                Resource:
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::*:guardrail/*"
+
+              - Sid: GetGuardrail
+                Effect: Allow
+                Action:
+                  - bedrock:GetGuardrail
+                Resource: "*"
+
+        - PolicyName: OpenClawS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AccessBackupBucket
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::openclaw-backup-${AWS::AccountId}-${AWS::Region}"
+                  - !Sub "arn:aws:s3:::openclaw-backup-${AWS::AccountId}-${AWS::Region}/*"
+
+              - Sid: AccessBootstrapScripts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${AssetsS3Bucket}"
+                  - !Sub "arn:aws:s3:::${AssetsS3Bucket}/*"
+
+        - PolicyName: OpenClawCloudWatchAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: PutMetrics
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                  - cloudwatch:GetMetricStatistics
+                  - cloudwatch:ListMetrics
+                Resource: "*"
+
+              - Sid: CreateLogGroups
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/openclaw/*"
+
+        - PolicyName: OpenClawSSMAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: GetParameters
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource:
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/openclaw/*"
+
+              - Sid: DecryptParameters
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource:
+                  - !Sub "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+                Condition:
+                  StringLike:
+                    kms:EncryptionContext:aws:ssm:arn:
+                      - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/openclaw/*"
+
+        - PolicyName: OpenClawEC2Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DescribeInstances
+                Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeTags
+                Resource: "*"
+
+              - Sid: ManageEIP
+                Effect: Allow
+                Action:
+                  - ec2:AssociateAddress
+                  - ec2:DescribeAddresses
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    ec2:ResourceTag/Project: OpenClawEnterprise
+
+  # Instance Profile
+  OpenClawInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /openclaw/
+      Roles:
+        - !Ref OpenClawInstanceRole
+
+  # Optional: Guardrail if not provided
+  BedrockGuardrail:
+    Type: AWS::Bedrock::Guardrail
+    Condition: CreateGuardrail
+    Properties:
+      Name: openclaw-enterprise-guardrail
+      Description: "Content filtering guardrail for OpenClaw Enterprise"
+      BlockedInputMessaging: "Your input contains content that violates our policies."
+      BlockedOutputsMessaging: "Your response contains content that violates our policies."
+      TopicPolicyConfig:
+        TopicsConfig:
+          - Name: "Competitors"
+            Definition: "Discussion about competitor products and services"
+            Type: DENY
+          - Name: "SensitiveData"
+            Definition: "Sharing of PII, financial data, or confidential information"
+            Type: DENY
+      ContentPolicyConfig:
+        FiltersConfig:
+          - InputStrength: HIGH
+            OutputStrength: HIGH
+            Type: HATE
+          - InputStrength: HIGH
+            OutputStrength: HIGH
+            Type: INSULTS
+          - InputStrength: HIGH
+            OutputStrength: HIGH
+            Type: THREAT
+          - InputStrength: HIGH
+            OutputStrength: HIGH
+            Type: SEXUAL
+          - InputStrength: MEDIUM
+            OutputStrength: MEDIUM
+            Type: VIOLENCE
+          - InputStrength: HIGH
+            OutputStrength: HIGH
+            Type: PROMPT_ATTACK
+      WordPolicyConfig:
+        WordsConfig: []
+        ManagedWordListsConfig: []
+
+Conditions:
+  CreateGuardrail: !Equals [!Ref EnableGuardrails, "true"]
+
+Outputs:
+  InstanceRoleArn:
+    Description: "IAM Role ARN for EC2 instance"
+    Value: !GetAtt OpenClawInstanceRole.Arn
+    Export:
+      Name: openclaw-enterprise-InstanceRoleArn
+
+  InstanceProfile:
+    Description: "Instance Profile name"
+    Value: !Ref OpenClawInstanceProfile
+    Export:
+      Name: openclaw-enterprise-InstanceProfile
+
+  GuardrailId:
+    Condition: CreateGuardrail
+    Description: "Auto-created Bedrock Guardrail ID"
+    Value: !Ref BedrockGuardrail
+    Export:
+      Name: openclaw-enterprise-GuardrailId
