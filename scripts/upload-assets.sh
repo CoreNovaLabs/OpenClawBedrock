@@ -4,7 +4,7 @@
 set -e
 
 S3_BUCKET=${1:-""}
-AWS_REGION=${2:-"us-west-2"}
+AWS_REGION=${2:-"us-east-1"}
 
 if [ -z "$S3_BUCKET" ]; then
     echo "Usage: $0 <s3-bucket> [region]"

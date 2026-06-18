@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-REGION="${1:-us-west-2}"
+REGION="${1:-us-east-1}"
 FILTER_NAME="ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-arm64-server-*"
 FILTER_OWNER="099720109477"  # Canonical
 

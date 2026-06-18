@@ -14,11 +14,11 @@ on:
       aws_region:
         description: "AWS Region to build AMI"
         required: true
-        default: "us-west-2"
+        default: "us-east-1"
         type: string
 
 env:
-  AWS_REGION: ${{ github.event.inputs.aws_region || 'us-west-2' }}
+  AWS_REGION: ${{ github.event.inputs.aws_region || 'us-east-1' }}
   PACKER_VERSION: 1.11.0
 
 jobs:

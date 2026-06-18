@@ -1,7 +1,7 @@
 # Packer variables for OpenClaw Bedrock AMI
 # Usage: packer build -var-file=variables.pkrvars.hcl openclaw-bedrock.pkr.hcl
 
-region           = "us-west-2"
+region           = "us-east-1"
 instance_type    = "c7g.large"
 root_volume_size = 50
 openclaw_version = "2026.4.27"
