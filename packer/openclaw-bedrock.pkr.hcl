@@ -32,7 +32,7 @@ variable "root_volume_size" {
 
 variable "openclaw_version" {
   type    = string
-  default = "2026.4.27"
+  default = "v2026.4.27"
 }
 
 variable "node_version" {

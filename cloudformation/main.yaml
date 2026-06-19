@@ -90,7 +90,7 @@ Metadata:
 Parameters:
   OpenClawVersion:
     Type: String
-    Default: "2026.4.27"
+    Default: "v2026.4.27"
     Description: "OpenClaw version to install (lock version for stability)"
 
   OpenClawModel:
@@ -489,7 +489,7 @@ Outputs:
 Mappings:
   RegionMap:
     us-east-1:
-      AMI: "ami-placeholder-us-east-1"
+      AMI: "ami-020fc67a29ad1eca3"
     us-west-2:
       AMI: "ami-placeholder-us-west-2"
     eu-west-1:

@@ -10,7 +10,7 @@ echo "Timestamp: $(date)"
 # ============================================================================
 # CONFIGURATION (passed from CloudFormation)
 # ============================================================================
-OPENCLAW_VERSION=${OPENCLAW_VERSION:-"2026.4.27"}
+OPENCLAW_VERSION=${OPENCLAW_VERSION:-"v2026.4.27"}
 OPENCLAW_MODEL=${OPENCLAW_MODEL:-"global.amazon.nova-2-lite-v1:0"}
 SCENARIO_PRESET=${SCENARIO_PRESET:-"general"}
 ENABLE_SANDBOX=${ENABLE_SANDBOX:-"true"}
@@ -169,7 +169,7 @@ litellm_settings:
   cache: true
   cache_params:
     type: redis
-    host: localhost
+    host: redis
     port: 6379
     ttl: 3600  # Cache TTL in seconds
 
@@ -178,9 +178,13 @@ litellm_settings:
   max_budget: ${MONTHLY_BUDGET}
   budget_duration: monthly
 
+  fallbacks:
+    - "${OPENCLAW_MODEL}":
+        - fallback-sonnet
+        - fallback-lite
+
 router_settings:
-  routing_strategy: simple-shuffle-highest-priority-bucket
-  fallbacks: [{${OPENCLAW_MODEL}}: ["fallback-sonnet", "fallback-lite"]}]
+  routing_strategy: simple-shuffle
   timeout: 60
 EOF
 
@@ -252,13 +256,31 @@ fi
 
 cd /opt/openclaw/openclaw
 
-# Checkout specific version
-git fetch --tags
-if git tag | grep -q "$OPENCLAW_VERSION"; then
-    git checkout "$OPENCLAW_VERSION"
-    log "Checked out OpenClaw version $OPENCLAW_VERSION"
+# Repo may be cloned as root during recovery runs; normalize ownership for git/docker.
+chown -R ubuntu:ubuntu /opt/openclaw/openclaw
+sudo -u ubuntu git config --global --add safe.directory /opt/openclaw/openclaw
+
+# Checkout specific version (exact tag match; fallback to main on failure)
+sudo -u ubuntu git fetch --tags
+resolve_openclaw_ref() {
+    local version="$1"
+    if sudo -u ubuntu git rev-parse "refs/tags/${version}" >/dev/null 2>&1; then
+        echo "$version"
+        return 0
+    fi
+    if sudo -u ubuntu git rev-parse "refs/tags/v${version}" >/dev/null 2>&1; then
+        echo "v${version}"
+        return 0
+    fi
+    return 1
+}
+
+if OPENCLAW_REF=$(resolve_openclaw_ref "$OPENCLAW_VERSION"); then
+    sudo -u ubuntu git checkout "$OPENCLAW_REF"
+    log "Checked out OpenClaw ref $OPENCLAW_REF"
 else
-    log "WARNING: Version $OPENCLAW_VERSION not found, using latest"
+    log "WARNING: Version $OPENCLAW_VERSION not found, using main"
+    sudo -u ubuntu git checkout main
 fi
 
 # Create OpenClaw environment file
@@ -298,18 +320,31 @@ CLOUDWATCH_LOG_GROUP=/openclaw/enterprise
 EOF
 
 # Connect OpenClaw gateway to the LiteLLM Docker network (single LiteLLM stack in /opt/litellm)
+OPENCLAW_CONFIG_DIR="/var/lib/openclaw/config"
+OPENCLAW_WORKSPACE_DIR="/opt/openclaw/openclaw/workspace"
+OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}"
+
+mkdir -p "$OPENCLAW_CONFIG_DIR" "$OPENCLAW_WORKSPACE_DIR"
+chown -R ubuntu:ubuntu "$OPENCLAW_CONFIG_DIR" "$OPENCLAW_WORKSPACE_DIR"
+
+cat > /opt/openclaw/openclaw/.env <<EOF
+OPENCLAW_GATEWAY_TOKEN=${GATEWAY_TOKEN}
+OPENCLAW_CONFIG_DIR=${OPENCLAW_CONFIG_DIR}
+OPENCLAW_WORKSPACE_DIR=${OPENCLAW_WORKSPACE_DIR}
+OPENCLAW_IMAGE=${OPENCLAW_IMAGE}
+OPENCLAW_GATEWAY_BIND=lan
+LITELLM_API_KEY=sk-litellm-proxy
+EOF
+
 if [ "$ENABLE_LITELLM" = "true" ]; then
     cat > /opt/openclaw/openclaw/docker-compose.override.yaml <<EOF
-version: '3.8'
 services:
-  gateway:
+  openclaw-gateway:
     ports:
       - "18789:18789"
     environment:
-      - GATEWAY_TOKEN=${GATEWAY_TOKEN}
-      - ENABLE_SANDBOX=${ENABLE_SANDBOX}
-      - OPENCLAW_API_BASE=http://litellm:4000/v1
-      - OPENCLAW_API_KEY=sk-litellm-proxy
+      OPENCLAW_GATEWAY_TOKEN: ${GATEWAY_TOKEN}
+      LITELLM_API_KEY: sk-litellm-proxy
     networks:
       - openclaw-net
 
@@ -320,15 +355,12 @@ networks:
 EOF
 else
     cat > /opt/openclaw/openclaw/docker-compose.override.yaml <<EOF
-version: '3.8'
 services:
-  gateway:
+  openclaw-gateway:
     ports:
       - "18789:18789"
     environment:
-      - GATEWAY_TOKEN=${GATEWAY_TOKEN}
-      - ENABLE_SANDBOX=${ENABLE_SANDBOX}
-      - AWS_REGION=${AWS_REGION}
+      OPENCLAW_GATEWAY_TOKEN: ${GATEWAY_TOKEN}
 EOF
 fi
 
@@ -339,11 +371,29 @@ if [ -d "/opt/openclaw/scenarios/${SCENARIO_PRESET}" ]; then
 fi
 
 chown -R ubuntu:ubuntu /opt/openclaw
+chown ubuntu:ubuntu /opt/openclaw/openclaw/.env
 
 # Start OpenClaw
 cd /opt/openclaw/openclaw
-sudo -u ubuntu docker compose pull
-sudo -u ubuntu docker compose up -d
+export OPENCLAW_CONFIG_DIR OPENCLAW_WORKSPACE_DIR OPENCLAW_IMAGE
+
+sudo -u ubuntu docker compose pull openclaw-gateway
+
+if [ "$ENABLE_LITELLM" = "true" ]; then
+    sudo -u ubuntu docker compose run --rm --no-deps --entrypoint node openclaw-gateway \
+        dist/index.js onboard --mode local --no-install-daemon --non-interactive \
+        --auth-choice litellm-api-key \
+        --litellm-api-key sk-litellm-proxy \
+        --custom-base-url "http://litellm:4000/v1" || \
+        log "WARNING: OpenClaw onboard returned non-zero; continuing if config exists"
+fi
+
+ALLOWED_ORIGINS="[\"https://${EIP}\",\"http://${EIP}\",\"http://127.0.0.1:18789\",\"http://localhost:18789\"]"
+sudo -u ubuntu docker compose run --rm --no-deps --entrypoint node openclaw-gateway \
+    dist/index.js config set --batch-json "[{\"path\":\"gateway.mode\",\"value\":\"local\"},{\"path\":\"gateway.bind\",\"value\":\"lan\"},{\"path\":\"gateway.controlUi.allowedOrigins\",\"value\":${ALLOWED_ORIGINS}}]" \
+    >/dev/null || log "WARNING: gateway config set failed"
+
+sudo -u ubuntu docker compose up -d openclaw-gateway
 
 log "OpenClaw started"
 

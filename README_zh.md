@@ -178,6 +178,91 @@
 | EU (Ireland) | `Launch Stack` |
 | Asia Pacific (Tokyo) | `Launch Stack` |
 
+### 手动从 AMI 启动（控制台）
+
+AMI 只是镜像，**不会自动对外提供服务**。必须配置 UserData 让首次开机执行 `bootstrap.sh`（申请 HTTPS 证书、启动 nginx 和 OpenClaw）。
+
+#### 前置条件
+
+| 项目 | 要求 |
+|------|------|
+| 区域 | `us-east-1`（与 AMI 构建区域一致） |
+| AMI | `ami-020fc67a29ad1eca3`（ARM64） |
+| 实例类型 | `c7g.large` / `c7g.xlarge` / `m7g.large` 等 **Graviton** |
+| 子网 | **公有子网**，能访问 Internet（Let's Encrypt 验证需要 80 端口） |
+| IAM 角色 | 含 Bedrock 调用 + `AmazonSSMManagedInstanceCore`（用于 SSM 排错） |
+| 安全组入站 | **TCP 80**（0.0.0.0/0）、**TCP 443**（你的 IP 或 0.0.0.0/0） |
+
+> 最简单创建 IAM 角色：先单独部署 `cloudformation/nested/iam.yaml`（传入 `AssetsS3Bucket`，可填任意已有桶名），使用输出的 Instance Profile。
+
+#### EC2 控制台步骤
+
+1. **EC2 → Launch instance**
+2. **Name**: `openclaw-manual`
+3. **AMI**: 选 `ami-020fc67a29ad1eca3`（My AMIs → Owned by me）
+4. **Instance type**: `c7g.large`
+5. **Key pair**: 可不选（用 SSM Session Manager 连接）
+6. **Network**:
+   - 选有 Internet 网关的 **公有子网**
+   - **Auto-assign public IP**: Enable
+7. **Security group**: 新建，放行 **80**、**443**
+8. **Advanced details**:
+   - **IAM instance profile**: 选 OpenClaw 角色
+   - **User data**（粘贴以下内容，**替换 `GATEWAY_TOKEN`**）:
+
+```bash
+#!/bin/bash -xe
+export AWS_REGION=us-east-1
+export OPENCLAW_VERSION=v2026.4.27
+export GATEWAY_TOKEN=请改成你的随机密钥
+export ENABLE_LITELLM=true
+export OPENCLAW_MODEL=global.amazon.nova-2-lite-v1:0
+export SCENARIO_PRESET=general
+exec /opt/openclaw/bootstrap.sh
+```
+
+9. **Launch instance**
+10. （推荐）**Elastic IP** → Allocate → Associate 到该实例  
+    - 若用 EIP：在 User data 里加一行 `export PUBLIC_IP=你的EIP`（在 launch 前就知道 EIP 时）
+    - 若实例已启动才绑 EIP：SSH/SSM 进机器执行 `sudo /opt/openclaw/bootstrap.sh`
+
+11. 等待 **10–20 分钟**，浏览器访问 `https://<公网IP>/`
+
+#### 用 CLI 一键手动启动
+
+```bash
+chmod +x scripts/manual-launch-ec2.sh
+
+# 先部署 IAM 子栈（仅需一次），记下 InstanceProfile 名称
+./scripts/manual-launch-ec2.sh \
+  --gateway-token "$(openssl rand -hex 16)" \
+  --iam-instance-profile OpenClawInstanceProfile \
+  --region us-east-1 \
+  --ami ami-020fc67a29ad1eca3
+```
+
+#### 排错
+
+```bash
+# SSM 连入实例
+aws ssm start-session --target <instance-id> --region us-east-1
+
+# 查看 bootstrap 日志
+sudo tail -100 /var/log/userdata.log
+
+# 检查服务
+systemctl status nginx
+docker ps
+curl -s http://127.0.0.1:18789/health
+```
+
+| 现象 | 常见原因 |
+|------|----------|
+| 连接超时 | 安全组未开 443，或子网无公网 |
+| HTTPS 失败、HTTP 正常 | Let's Encrypt 证书未签发 |
+| 502 Bad Gateway | OpenClaw Docker 仍在启动 |
+| 页面要 Token | 使用 UserData 里的 `GATEWAY_TOKEN` |
+
 ### 部署后连接
 
 ```bash
