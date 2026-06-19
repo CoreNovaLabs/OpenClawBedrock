@@ -380,18 +380,35 @@ export OPENCLAW_CONFIG_DIR OPENCLAW_WORKSPACE_DIR OPENCLAW_IMAGE
 sudo -u ubuntu docker compose pull openclaw-gateway
 
 if [ "$ENABLE_LITELLM" = "true" ]; then
-    sudo -u ubuntu docker compose run --rm --no-deps --entrypoint node openclaw-gateway \
-        dist/index.js onboard --mode local --no-install-daemon --non-interactive \
-        --auth-choice litellm-api-key \
-        --litellm-api-key sk-litellm-proxy \
-        --custom-base-url "http://litellm:4000/v1" || \
-        log "WARNING: OpenClaw onboard returned non-zero; continuing if config exists"
+    cat > /tmp/openclaw-litellm-batch.json <<EOF
+[
+  {"path": "models.providers.litellm.baseUrl", "value": "http://litellm:4000/v1"},
+  {"path": "models.providers.litellm.apiKey", "value": "sk-litellm-proxy"},
+  {"path": "models.providers.litellm.api", "value": "openai-completions"},
+  {"path": "models.providers.litellm.request.allowPrivateNetwork", "value": true},
+  {"path": "models.providers.litellm.models", "value": [
+    {"id": "${OPENCLAW_MODEL}", "name": "Amazon Nova 2 Lite", "reasoning": false, "input": ["text"], "contextWindow": 200000, "maxTokens": 8192},
+    {"id": "fallback-sonnet", "name": "Claude Sonnet 4", "reasoning": true, "input": ["text", "image"], "contextWindow": 200000, "maxTokens": 8192},
+    {"id": "fallback-lite", "name": "Nova Lite (fallback)", "reasoning": false, "input": ["text"], "contextWindow": 128000, "maxTokens": 8192}
+  ]},
+  {"path": "agents.defaults.model.primary", "value": "litellm/${OPENCLAW_MODEL}"}
+]
+EOF
+    chown ubuntu:ubuntu /tmp/openclaw-litellm-batch.json
 fi
 
 ALLOWED_ORIGINS="[\"https://${EIP}\",\"http://${EIP}\",\"http://127.0.0.1:18789\",\"http://localhost:18789\"]"
 sudo -u ubuntu docker compose run --rm --no-deps --entrypoint node openclaw-gateway \
-    dist/index.js config set --batch-json "[{\"path\":\"gateway.mode\",\"value\":\"local\"},{\"path\":\"gateway.bind\",\"value\":\"lan\"},{\"path\":\"gateway.controlUi.allowedOrigins\",\"value\":${ALLOWED_ORIGINS}}]" \
+    dist/index.js config set --batch-json "[{\"path\":\"gateway.mode\",\"value\":\"local\"},{\"path\":\"gateway.bind\",\"value\":\"lan\"},{\"path\":\"gateway.controlUi.allowedOrigins\",\"value\":${ALLOWED_ORIGINS}},{\"path\":\"gateway.auth.token\",\"value\":\"${GATEWAY_TOKEN}\"}]" \
     >/dev/null || log "WARNING: gateway config set failed"
+
+if [ "$ENABLE_LITELLM" = "true" ]; then
+    cp /tmp/openclaw-litellm-batch.json "${OPENCLAW_CONFIG_DIR}/litellm-batch.json"
+    chown ubuntu:ubuntu "${OPENCLAW_CONFIG_DIR}/litellm-batch.json"
+    sudo -u ubuntu docker compose run --rm --no-deps --entrypoint node openclaw-gateway \
+        dist/index.js config set --batch-file /home/node/.openclaw/litellm-batch.json \
+        >/dev/null || log "WARNING: LiteLLM model config set failed"
+fi
 
 sudo -u ubuntu docker compose up -d openclaw-gateway
 
