@@ -131,7 +131,7 @@ INSTANCE_ID=$(aws ec2 run-instances \
   --security-group-ids "$SG_ID" \
   --iam-instance-profile "Name=${IAM_PROFILE}" \
   --user-data "$USERDATA" \
-  --metadata-options "HttpTokens=required,HttpPutResponseHopLimit=1" \
+  --metadata-options "HttpTokens=required,HttpPutResponseHopLimit=2" \
   --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":50,"VolumeType":"gp3","Encrypted":true}}]' \
   --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=openclaw-manual},{Key=Project,Value=OpenClawEnterprise}]" \
   --query 'Instances[0].InstanceId' \

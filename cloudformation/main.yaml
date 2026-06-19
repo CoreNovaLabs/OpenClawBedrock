@@ -345,7 +345,7 @@ Resources:
       MetadataOptions:
         HttpTokens: !If [EnableIMDSv2, "required", "optional"]
         HttpEndpoint: enabled
-        HttpPutResponseHopLimit: 1
+        HttpPutResponseHopLimit: 2
       UserData:
         Fn::Base64: !Sub
           - |
